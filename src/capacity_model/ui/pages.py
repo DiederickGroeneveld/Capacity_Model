@@ -16,6 +16,7 @@ from capacity_model.services.capacity import build_kpis, summarize_capacity
 from capacity_model.services.curve_data import build_probability_curve_dataframe
 from capacity_model.services.daily_probability_table import build_daily_probability_table
 from capacity_model.services.factors import resolve_active_factor
+from capacity_model.services.loading_profile import simulate_loading_profile_from_arrivals
 from capacity_model.ui.theme import apply_brand_theme, style_curve_figure
 
 
@@ -95,6 +96,51 @@ def render_home_page(settings: Settings) -> None:
                 step=1,
             )
         )
+        st.divider()
+        st.header("Charging profile inputs")
+        number_of_charge_points = int(
+            st.number_input(
+                "Aantal laadpunten",
+                min_value=1,
+                value=2,
+                step=1,
+            )
+        )
+        st.caption(f"Aantal pistolen (2 per paal): {number_of_charge_points * 2}")
+        average_duration_min = float(
+            st.number_input(
+                "Gemiddelde duur (min)",
+                min_value=1.0,
+                value=35.0,
+                step=1.0,
+            )
+        )
+        duration_spread_min = float(
+            st.number_input(
+                "Spreiding (min)",
+                min_value=0.0,
+                value=10.0,
+                step=1.0,
+            )
+        )
+        charge_speed_kwh_per_min = float(
+            st.number_input(
+                "Laad snelheid (kWh/minuut)",
+                min_value=0.01,
+                value=1.16,
+                step=0.01,
+                format="%.2f",
+            )
+        )
+        average_kwh = float(
+            st.number_input(
+                "Gemiddelde kWh",
+                min_value=0.1,
+                value=40.6,
+                step=0.1,
+                format="%.1f",
+            )
+        )
         
     try:
         raw_data = load_uploaded_data(uploaded_file) if uploaded_file else load_sample_data()
@@ -114,6 +160,11 @@ def render_home_page(settings: Settings) -> None:
         end_date,
         expected_sessions,
         trials,
+        number_of_charge_points,
+        average_duration_min,
+        duration_spread_min,
+        charge_speed_kwh_per_min,
+        average_kwh,
         means_raw,
         std_raw,
         weights_raw,
@@ -158,6 +209,11 @@ def _render_probability_curve(
     end_date: date,
     expected_sessions: int,
     trials: int,
+    number_of_charge_points: int,
+    average_duration_min: float,
+    duration_spread_min: float,
+    charge_speed_kwh_per_min: float,
+    average_kwh: float,
     means_raw: str,
     std_raw: str,
     weights_raw: str,
@@ -238,6 +294,15 @@ def _render_probability_curve(
             trials=trials,
             random_seed=42,
         )
+        st.session_state["loading_profile_df"] = simulate_loading_profile_from_arrivals(
+            st.session_state["simulated_arrivals_df"],
+            number_of_charge_points=number_of_charge_points,
+            average_duration_min=average_duration_min,
+            duration_spread_min=duration_spread_min,
+            charge_speed_kwh_per_min=charge_speed_kwh_per_min,
+            average_kwh=average_kwh,
+            random_seed=42,
+        )
 
         st.plotly_chart(figure, use_container_width=True)
     except ValueError as error:
@@ -252,6 +317,7 @@ def _render_probability_data_page() -> None:
 
     probability_table_df = st.session_state.get("probability_table_df")
     simulated_arrivals_df = st.session_state.get("simulated_arrivals_df")
+    loading_profile_df = st.session_state.get("loading_profile_df")
 
     st.markdown("### Probability curve dataset")
     if isinstance(probability_table_df, pd.DataFrame) and not probability_table_df.empty:
@@ -278,6 +344,26 @@ def _render_probability_data_page() -> None:
         )
     else:
         st.info("No simulated arrivals dataset yet. Go to Dashboard and click 'Build curve'.")
+
+    st.markdown("### Loading profile dataset")
+    if isinstance(loading_profile_df, pd.DataFrame) and not loading_profile_df.empty:
+        mu_duration = float(loading_profile_df["duration_min"].mean())
+        sigma_duration = float(loading_profile_df["duration_min"].std(ddof=0))
+
+        kpi_col_1, kpi_col_2 = st.columns(2)
+        kpi_col_1.metric("μ duur (min)", f"{mu_duration:.2f}")
+        kpi_col_2.metric("σ duur (min)", f"{sigma_duration:.2f}")
+
+        st.write(f"Rows: {len(loading_profile_df)}")
+        st.dataframe(loading_profile_df, use_container_width=True)
+        st.download_button(
+            "Download loading profile (CSV)",
+            data=loading_profile_df.to_csv(index=False).encode("utf-8"),
+            file_name="loading_profile_dataset.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No loading profile dataset yet. Go to Dashboard and click 'Build curve'.")
 
 
 def _filter_data(dataframe: pd.DataFrame, selected_team: str) -> pd.DataFrame:
