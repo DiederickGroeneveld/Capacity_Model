@@ -40,7 +40,7 @@ def test_build_daily_probability_table_shape_and_headers() -> None:
     assert result.columns[3] == "00:00"
     assert result.columns[-1] == "23:59"
     assert len(result.columns) == 3 + 1440
-    assert result["totaal"].gt(0).all()
+    assert result["totaal"].eq(1.0).all()
 
     minute_columns = result.columns[3:]
     minute_sums = result[minute_columns].sum(axis=1)

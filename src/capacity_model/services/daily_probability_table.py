@@ -61,13 +61,15 @@ def build_daily_probability_table(
 
         if total_value > 0:
             minute_probabilities = [value / total_value for value in minute_values]
+            normalized_total = 1.0
         else:
             minute_probabilities = [0.0 for _ in minute_values]
+            normalized_total = 0.0
 
         row: dict[str, float | str] = {
             "Datum": current_date.strftime("%d/%m/%Y"),
             "weekdag": weekday_name,
-            "totaal": total_value,
+            "totaal": normalized_total,
         }
         row.update({header: value for header, value in zip(minute_headers, minute_probabilities)})
         records.append(row)
