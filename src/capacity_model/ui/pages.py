@@ -141,6 +141,25 @@ def render_home_page(settings: Settings) -> None:
                 format="%.1f",
             )
         )
+        recapture_rate = float(
+            st.number_input(
+                "Recapture rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.2,
+                step=0.01,
+                format="%.2f",
+            )
+        )
+        in_progress_threshold_min = float(
+            st.number_input(
+                "Time to end of session in progress (min)",
+                min_value=0.0,
+                value=10.0,
+                step=1.0,
+                format="%.1f",
+            )
+        )
         
     try:
         raw_data = load_uploaded_data(uploaded_file) if uploaded_file else load_sample_data()
@@ -152,8 +171,8 @@ def render_home_page(settings: Settings) -> None:
     summary = summarize_capacity(filtered_data)
     kpis = build_kpis(summary)
     st.session_state["summary_df"] = summary
+    kpi_container = st.container()
 
-    _render_kpis(kpis)
     _render_probability_curve(
         run,
         start_date,
@@ -165,6 +184,8 @@ def render_home_page(settings: Settings) -> None:
         duration_spread_min,
         charge_speed_kwh_per_min,
         average_kwh,
+        recapture_rate,
+        in_progress_threshold_min,
         means_raw,
         std_raw,
         weights_raw,
@@ -174,6 +195,10 @@ def render_home_page(settings: Settings) -> None:
         selected_weekday,
         selected_month,
     )
+
+    missed_sessions_total = _get_missed_sessions_total(st.session_state.get("loading_profile_df"))
+    with kpi_container:
+        _render_kpis(kpis, missed_sessions_total)
 
 
 def _parse_float_list(raw: str, label: str) -> list[float]:
@@ -214,6 +239,8 @@ def _render_probability_curve(
     duration_spread_min: float,
     charge_speed_kwh_per_min: float,
     average_kwh: float,
+    recapture_rate: float,
+    in_progress_threshold_min: float,
     means_raw: str,
     std_raw: str,
     weights_raw: str,
@@ -301,6 +328,8 @@ def _render_probability_curve(
             duration_spread_min=duration_spread_min,
             charge_speed_kwh_per_min=charge_speed_kwh_per_min,
             average_kwh=average_kwh,
+            recapture_rate=recapture_rate,
+            in_progress_threshold_min=in_progress_threshold_min,
             random_seed=42,
         )
 
@@ -374,9 +403,19 @@ def _filter_data(dataframe: pd.DataFrame, selected_team: str) -> pd.DataFrame:
     return dataframe.loc[team_mask].reset_index(drop=True)
 
 
-def _render_kpis(kpis: dict[str, float]) -> None:
+def _get_missed_sessions_total(loading_profile_df: object) -> int:
+    if not isinstance(loading_profile_df, pd.DataFrame) or loading_profile_df.empty:
+        return 0
+
+    if "session_missed" in loading_profile_df.columns:
+        return int(loading_profile_df["session_missed"].astype(int).sum())
+
+    return 0
+
+
+def _render_kpis(kpis: dict[str, float], missed_sessions_total: int) -> None:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Capacity", f"{kpis['total_capacity']:,.0f}")
     col2.metric("Total Demand", f"{kpis['total_demand']:,.0f}")
     col3.metric("Net Gap", f"{kpis['total_gap']:,.0f}")
-    col4.metric("Utilization", f"{kpis['utilization_pct']:.1f}%")
+    col4.metric("Missed Sessions", f"{missed_sessions_total}")

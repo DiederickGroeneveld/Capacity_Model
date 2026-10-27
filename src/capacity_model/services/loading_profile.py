@@ -37,6 +37,8 @@ def simulate_loading_profile_from_arrivals(
     duration_spread_min: float,
     charge_speed_kwh_per_min: float,
     average_kwh: float,
+    recapture_rate: float = 0.2,
+    in_progress_threshold_min: float = 10.0,
     random_seed: int | None = None,
 ) -> pd.DataFrame:
     """Simulate loading time per arrival based on minute-level arrivals.
@@ -54,6 +56,10 @@ def simulate_loading_profile_from_arrivals(
         raise ValueError("charge_speed_kwh_per_min must be > 0")
     if average_kwh <= 0:
         raise ValueError("average_kwh must be > 0")
+    if not 0 <= recapture_rate <= 1:
+        raise ValueError("recapture_rate must be between 0 and 1")
+    if in_progress_threshold_min < 0:
+        raise ValueError("in_progress_threshold_min must be >= 0")
 
     minute_columns = _minute_columns(simulated_arrivals_df)
     if not minute_columns:
@@ -65,8 +71,9 @@ def simulate_loading_profile_from_arrivals(
     baseline_kwh = average_duration_min * charge_speed_kwh_per_min
     kwh_scale = average_kwh / baseline_kwh if baseline_kwh > 0 else 1.0
 
-    records: list[dict[str, int | float | str]] = []
+    records: list[dict[str, int | float | str | bool]] = []
     session_id = 0
+    pistol_available_at: list[datetime] = [datetime.min for _ in range(connector_count)]
 
     for _, row in simulated_arrivals_df.iterrows():
         date_text = str(row.get("Datum", ""))
@@ -85,6 +92,48 @@ def simulate_loading_profile_from_arrivals(
                 session_id += 1
                 duration_min = _sample_duration_minutes(rng, average_duration_min, duration_spread_min)
                 energy_kwh = duration_min * charge_speed_kwh_per_min * kwh_scale
+                charging_start_datetime = arrival_datetime
+
+                assigned_pistol_index: int | None = None
+                for index, available_at in enumerate(pistol_available_at):
+                    if available_at <= arrival_datetime:
+                        assigned_pistol_index = index
+                        break
+
+                missed_at_arrival = assigned_pistol_index is None
+
+                minutes_until_next_available: float | None = None
+                session_in_progress_within_threshold = False
+                recaptured_session = False
+
+                if missed_at_arrival:
+                    earliest_available = min(pistol_available_at)
+                    minutes_until_next_available = max(
+                        0.0,
+                        (earliest_available - arrival_datetime).total_seconds() / 60.0,
+                    )
+                    session_in_progress_within_threshold = (
+                        minutes_until_next_available <= in_progress_threshold_min
+                    )
+
+                    if session_in_progress_within_threshold and rng.random() < recapture_rate:
+                        assigned_pistol_index = int(np.argmin(pistol_available_at))
+                        charging_start_datetime = pistol_available_at[assigned_pistol_index]
+                        recaptured_session = True
+
+                if assigned_pistol_index is not None:
+                    end_datetime = charging_start_datetime + timedelta(minutes=duration_min)
+                    pistol_available_at[assigned_pistol_index] = end_datetime
+                else:
+                    end_datetime = arrival_datetime + timedelta(minutes=duration_min)
+
+                session_missed = assigned_pistol_index is None
+                used_pistol = f"pistol_{assigned_pistol_index + 1}" if assigned_pistol_index is not None else "missed"
+
+                pistol_usage_columns = {
+                    f"pistol_{index + 1}_in_use": int(assigned_pistol_index == index)
+                    for index in range(connector_count)
+                }
 
                 records.append(
                     {
@@ -93,12 +142,38 @@ def simulate_loading_profile_from_arrivals(
                         "weekdag": weekday_text,
                         "arrival_minute": minute_label,
                         "arrival_datetime": arrival_datetime.strftime("%Y-%m-%d %H:%M"),
+                        "charging_start_datetime": charging_start_datetime.strftime("%Y-%m-%d %H:%M"),
                         "duration_min": duration_min,
-                        "end_datetime": (arrival_datetime + timedelta(minutes=duration_min)).strftime("%Y-%m-%d %H:%M"),
+                        "end_datetime": end_datetime.strftime("%Y-%m-%d %H:%M"),
                         "energy_kwh": round(float(energy_kwh), 3),
                         "aantal_laadpunten": number_of_charge_points,
                         "aantal_pistolen": connector_count,
+                        "used_pistol": used_pistol,
+                        "missed_at_arrival": missed_at_arrival,
+                        "minutes_until_next_available": (
+                            round(float(minutes_until_next_available), 3)
+                            if minutes_until_next_available is not None
+                            else np.nan
+                        ),
+                        "session_in_progress_within_threshold": session_in_progress_within_threshold,
+                        "recaptured_session": recaptured_session,
+                        "session_missed": session_missed,
+                        "recapture_rate": recapture_rate,
+                        "in_progress_threshold_min": in_progress_threshold_min,
+                        **pistol_usage_columns,
                     }
                 )
 
-    return pd.DataFrame(records)
+    profile_df = pd.DataFrame(records)
+    if profile_df.empty:
+        return profile_df
+
+    missed_counts = (
+        profile_df.loc[profile_df["session_missed"]]
+        .groupby("arrival_datetime")
+        .size()
+        .to_dict()
+    )
+    profile_df["missed_sessions_at_arrival_time"] = profile_df["arrival_datetime"].map(missed_counts).fillna(0).astype(int)
+
+    return profile_df
