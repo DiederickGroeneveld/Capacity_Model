@@ -4,6 +4,7 @@ from .arrival_simulation import simulate_daily_arrivals, simulate_daily_arrivals
 from .curve_data import build_probability_curve_dataframe
 from .daily_probability_table import build_daily_probability_table
 from .distributions import combine_normal_distributions
+from .energy_flow import calculate_connection_capacity_kw
 from .factors import apply_scalar_factor, resolve_active_factor
 from .loading_profile import simulate_loading_profile_from_arrivals
 
@@ -13,6 +14,7 @@ __all__ = [
 	"simulate_daily_arrivals_from_probability_table",
 	"simulate_daily_arrivals",
 	"simulate_loading_profile_from_arrivals",
+	"calculate_connection_capacity_kw",
 	"resolve_active_factor",
 	"apply_scalar_factor",
 	"build_probability_curve_dataframe",
