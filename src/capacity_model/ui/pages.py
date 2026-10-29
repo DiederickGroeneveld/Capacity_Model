@@ -12,7 +12,6 @@ from capacity_model.config import Settings
 from capacity_model.data import MONTH_DEFAULT_FACTORS, WEEKDAY_DEFAULT_FACTORS
 from capacity_model.data.loaders import load_sample_data, load_uploaded_data
 from capacity_model.services.arrival_simulation import simulate_daily_arrivals_from_probability_table
-from capacity_model.services.capacity import build_kpis, summarize_capacity
 from capacity_model.services.curve_data import build_probability_curve_dataframe
 from capacity_model.services.daily_probability_table import build_daily_probability_table
 from capacity_model.services.energy_flow import (
@@ -21,6 +20,7 @@ from capacity_model.services.energy_flow import (
 )
 from capacity_model.services.factors import resolve_active_factor
 from capacity_model.services.loading_profile import simulate_loading_profile_from_arrivals
+from capacity_model.services.session_finance import add_session_financials, build_financial_kpis
 from capacity_model.ui.theme import apply_brand_theme, style_curve_figure
 
 
@@ -88,7 +88,7 @@ def render_home_page(settings: Settings) -> None:
             st.number_input(
                 "Expected amount of sessions",
                 min_value=1,
-                value=100,
+                value=9,
                 step=1,
             )
         )
@@ -219,9 +219,7 @@ def render_home_page(settings: Settings) -> None:
         return
 
     filtered_data = _filter_data(raw_data, selected_team)
-    summary = summarize_capacity(filtered_data)
-    kpis = build_kpis(summary)
-    st.session_state["summary_df"] = summary
+    st.session_state["summary_df"] = filtered_data
     kpi_container = st.container()
 
     _render_probability_curve(
@@ -255,6 +253,11 @@ def render_home_page(settings: Settings) -> None:
 
     total_sessions = _get_total_sessions(st.session_state.get("loading_profile_df"))
     missed_sessions_total = _get_missed_sessions_total(st.session_state.get("loading_profile_df"))
+    kpis = build_financial_kpis(
+        st.session_state.get("loading_profile_df", pd.DataFrame()),
+        market_price_kwh_ex_btw=market_price_kwh_ex_btw,
+        retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
+    )
     with kpi_container:
         _render_kpis(kpis, total_sessions, missed_sessions_total)
 
@@ -385,7 +388,7 @@ def _render_probability_curve(
             trials=trials,
             random_seed=42,
         )
-        st.session_state["loading_profile_df"] = simulate_loading_profile_from_arrivals(
+        loading_profile_df = simulate_loading_profile_from_arrivals(
             st.session_state["simulated_arrivals_df"],
             number_of_charge_points=number_of_charge_points,
             average_duration_min=average_duration_min,
@@ -396,12 +399,18 @@ def _render_probability_curve(
             in_progress_threshold_min=in_progress_threshold_min,
             random_seed=42,
         )
-        st.session_state["loading_profile_df"]["connection_capacity_kw"] = round(connection_capacity_kw, 3)
-        st.session_state["loading_profile_df"]["amperes"] = amperes
-        st.session_state["loading_profile_df"]["volt"] = volt
-        st.session_state["loading_profile_df"]["battery_size_kwh"] = battery_size_kwh
-        st.session_state["loading_profile_df"]["market_price_kwh_ex_btw"] = market_price_kwh_ex_btw
-        st.session_state["loading_profile_df"]["retail_price_kwh_ex_btw"] = retail_price_kwh_ex_btw
+        loading_profile_df = add_session_financials(
+            loading_profile_df,
+            market_price_kwh_ex_btw=market_price_kwh_ex_btw,
+            retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
+        )
+        loading_profile_df["connection_capacity_kw"] = round(connection_capacity_kw, 3)
+        loading_profile_df["amperes"] = amperes
+        loading_profile_df["volt"] = volt
+        loading_profile_df["battery_size_kwh"] = battery_size_kwh
+        loading_profile_df["market_price_kwh_ex_btw"] = market_price_kwh_ex_btw
+        loading_profile_df["retail_price_kwh_ex_btw"] = retail_price_kwh_ex_btw
+        st.session_state["loading_profile_df"] = loading_profile_df
 
         energy_flow_df = build_cumulative_energy_flow_dataframe(
             st.session_state["loading_profile_df"],
@@ -518,7 +527,7 @@ def _get_total_sessions(loading_profile_df: object) -> int:
 
 def _render_kpis(kpis: dict[str, float], total_sessions: int, missed_sessions_total: int) -> None:
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Capacity", f"{kpis['total_capacity']:,.0f}")
-    col2.metric("Total Demand", f"{kpis['total_demand']:,.0f}")
+    col1.metric("Total turnover ex. btw", f"€ {kpis['total_turnover_ex_btw']:,.2f}")
+    col2.metric("Total profit ex. btw", f"€ {kpis['total_profit_ex_btw']:,.2f}")
     col3.metric("Total Sessions", f"{total_sessions}")
     col4.metric("Missed Sessions", f"{missed_sessions_total}")

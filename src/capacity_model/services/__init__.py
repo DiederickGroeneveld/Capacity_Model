@@ -7,6 +7,7 @@ from .distributions import combine_normal_distributions
 from .energy_flow import build_cumulative_energy_flow_dataframe, calculate_connection_capacity_kw
 from .factors import apply_scalar_factor, resolve_active_factor
 from .loading_profile import simulate_loading_profile_from_arrivals
+from .session_finance import add_session_financials, build_financial_kpis
 
 __all__ = [
 	"combine_normal_distributions",
@@ -19,4 +20,6 @@ __all__ = [
 	"resolve_active_factor",
 	"apply_scalar_factor",
 	"build_probability_curve_dataframe",
+	"add_session_financials",
+	"build_financial_kpis",
 ]
