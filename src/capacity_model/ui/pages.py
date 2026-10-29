@@ -15,7 +15,10 @@ from capacity_model.services.arrival_simulation import simulate_daily_arrivals_f
 from capacity_model.services.capacity import build_kpis, summarize_capacity
 from capacity_model.services.curve_data import build_probability_curve_dataframe
 from capacity_model.services.daily_probability_table import build_daily_probability_table
-from capacity_model.services.energy_flow import calculate_connection_capacity_kw
+from capacity_model.services.energy_flow import (
+    build_cumulative_energy_flow_dataframe,
+    calculate_connection_capacity_kw,
+)
 from capacity_model.services.factors import resolve_active_factor
 from capacity_model.services.loading_profile import simulate_loading_profile_from_arrivals
 from capacity_model.ui.theme import apply_brand_theme, style_curve_figure
@@ -188,6 +191,24 @@ def render_home_page(settings: Settings) -> None:
                 format="%.1f",
             )
         )
+        market_price_kwh_ex_btw = float(
+            st.number_input(
+                "Market price KWH ex. btw",
+                min_value=0.0,
+                value=0.19,
+                step=0.01,
+                format="%.2f",
+            )
+        )
+        retail_price_kwh_ex_btw = float(
+            st.number_input(
+                "Retail price KWH ex. btw",
+                min_value=0.0,
+                value=0.59,
+                step=0.01,
+                format="%.2f",
+            )
+        )
         connection_capacity_kw = calculate_connection_capacity_kw(amperes, volt)
         st.metric("Connection capacity (kW)", f"{connection_capacity_kw:.2f}")
         
@@ -220,6 +241,8 @@ def render_home_page(settings: Settings) -> None:
         amperes,
         volt,
         battery_size_kwh,
+        market_price_kwh_ex_btw,
+        retail_price_kwh_ex_btw,
         means_raw,
         std_raw,
         weights_raw,
@@ -280,6 +303,8 @@ def _render_probability_curve(
     amperes: float,
     volt: float,
     battery_size_kwh: float,
+    market_price_kwh_ex_btw: float,
+    retail_price_kwh_ex_btw: float,
     means_raw: str,
     std_raw: str,
     weights_raw: str,
@@ -375,8 +400,36 @@ def _render_probability_curve(
         st.session_state["loading_profile_df"]["amperes"] = amperes
         st.session_state["loading_profile_df"]["volt"] = volt
         st.session_state["loading_profile_df"]["battery_size_kwh"] = battery_size_kwh
+        st.session_state["loading_profile_df"]["market_price_kwh_ex_btw"] = market_price_kwh_ex_btw
+        st.session_state["loading_profile_df"]["retail_price_kwh_ex_btw"] = retail_price_kwh_ex_btw
+
+        energy_flow_df = build_cumulative_energy_flow_dataframe(
+            st.session_state["loading_profile_df"],
+            start_date=pd.Timestamp(start_date),
+            end_date=pd.Timestamp(end_date),
+            battery_size_kwh=battery_size_kwh,
+            connection_capacity_kw=connection_capacity_kw,
+            session_draw_kwh_per_min=1.16,
+        )
+        energy_flow_df["market_price_kwh_ex_btw"] = market_price_kwh_ex_btw
+        energy_flow_df["retail_price_kwh_ex_btw"] = retail_price_kwh_ex_btw
+        st.session_state["energy_flow_df"] = energy_flow_df
 
         st.plotly_chart(figure, use_container_width=True)
+
+        st.subheader("Cumulative energy graph")
+        energy_figure = px.line(
+            energy_flow_df,
+            x="timestamp",
+            y="battery_remaining_kwh",
+            title="Battery pack remaining energy over time",
+            labels={
+                "timestamp": "Time",
+                "battery_remaining_kwh": "Battery remaining (kWh)",
+            },
+        )
+        style_curve_figure(energy_figure)
+        st.plotly_chart(energy_figure, use_container_width=True)
     except ValueError as error:
         st.error(f"Curve input error: {error}")
 
