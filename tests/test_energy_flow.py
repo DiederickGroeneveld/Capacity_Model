@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from capacity_model.services.energy_flow import (
+    apply_battery_constraints_to_loading_profile,
     build_cumulative_energy_flow_dataframe,
     calculate_connection_capacity_kw,
 )
@@ -121,3 +122,65 @@ def test_build_cumulative_energy_flow_dataframe_recharge_is_capped_at_battery_si
 
     assert float(result.iloc[0]["battery_remaining_kwh"]) == pytest.approx(5.0)
     assert float(result.iloc[10]["battery_remaining_kwh"]) == pytest.approx(5.0)
+
+
+def test_apply_battery_constraints_marks_sessions_missed_when_battery_is_empty() -> None:
+    loading_profile = pd.DataFrame(
+        [
+            {
+                "session_id": 1,
+                "arrival_datetime": "2026-01-01 00:00",
+                "charging_start_datetime": "2026-01-01 00:00",
+                "end_datetime": "2026-01-01 00:02",
+                "session_missed": False,
+                "used_pistol": "pistol_1",
+            },
+            {
+                "session_id": 2,
+                "arrival_datetime": "2026-01-01 00:00",
+                "charging_start_datetime": "2026-01-01 00:00",
+                "end_datetime": "2026-01-01 00:02",
+                "session_missed": False,
+                "used_pistol": "pistol_2",
+            },
+        ]
+    )
+
+    result = apply_battery_constraints_to_loading_profile(
+        loading_profile,
+        battery_size_kwh=1.0,
+        connection_capacity_kw=60.0,
+        session_draw_kwh_per_min=1.0,
+    )
+
+    assert result["session_missed_by_battery"].all()
+    assert result["session_missed"].all()
+    assert result["missed_reason"].eq("battery_empty").all()
+    assert result["used_pistol"].eq("missed_battery").all()
+    assert result["missed_sessions_at_arrival_time"].eq(2).all()
+
+
+def test_apply_battery_constraints_preserves_existing_pistol_misses() -> None:
+    loading_profile = pd.DataFrame(
+        [
+            {
+                "session_id": 1,
+                "arrival_datetime": "2026-01-01 00:00",
+                "charging_start_datetime": "2026-01-01 00:00",
+                "end_datetime": "2026-01-01 00:02",
+                "session_missed": True,
+                "used_pistol": "missed",
+            }
+        ]
+    )
+
+    result = apply_battery_constraints_to_loading_profile(
+        loading_profile,
+        battery_size_kwh=1.0,
+        connection_capacity_kw=60.0,
+        session_draw_kwh_per_min=1.0,
+    )
+
+    assert bool(result.iloc[0]["session_missed"]) is True
+    assert bool(result.iloc[0]["session_missed_by_battery"]) is False
+    assert str(result.iloc[0]["missed_reason"]) == "pistol_unavailable"

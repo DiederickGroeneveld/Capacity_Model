@@ -15,6 +15,7 @@ from capacity_model.services.arrival_simulation import simulate_daily_arrivals_f
 from capacity_model.services.curve_data import build_probability_curve_dataframe
 from capacity_model.services.daily_probability_table import build_daily_probability_table
 from capacity_model.services.energy_flow import (
+    apply_battery_constraints_to_loading_profile,
     build_cumulative_energy_flow_dataframe,
     calculate_connection_capacity_kw,
 )
@@ -252,14 +253,16 @@ def render_home_page(settings: Settings) -> None:
     )
 
     total_sessions = _get_total_sessions(st.session_state.get("loading_profile_df"))
-    missed_sessions_total = _get_missed_sessions_total(st.session_state.get("loading_profile_df"))
+    missed_sessions_pistol, missed_sessions_battery = _get_missed_sessions_by_reason(
+        st.session_state.get("loading_profile_df")
+    )
     kpis = build_financial_kpis(
         st.session_state.get("loading_profile_df", pd.DataFrame()),
         market_price_kwh_ex_btw=market_price_kwh_ex_btw,
         retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
     )
     with kpi_container:
-        _render_kpis(kpis, total_sessions, missed_sessions_total)
+        _render_kpis(kpis, total_sessions, missed_sessions_pistol, missed_sessions_battery)
 
 
 def _parse_float_list(raw: str, label: str) -> list[float]:
@@ -327,6 +330,62 @@ def _render_probability_curve(
             st.rerun()
 
     if not run:
+        stored_curve_df = st.session_state.get("curve_df")
+        stored_energy_flow_df = st.session_state.get("energy_flow_df")
+        stored_x_column = st.session_state.get("curve_x_column")
+
+        if (
+            isinstance(stored_curve_df, pd.DataFrame)
+            and not stored_curve_df.empty
+            and isinstance(stored_energy_flow_df, pd.DataFrame)
+            and not stored_energy_flow_df.empty
+            and isinstance(stored_x_column, str)
+            and stored_x_column in stored_curve_df.columns
+        ):
+            title_prefix = str(st.session_state.get("curve_title_prefix", "Kans curve"))
+            curve_weekday = str(st.session_state.get("curve_selected_weekday", selected_weekday))
+            curve_month = str(st.session_state.get("curve_selected_month", selected_month))
+            week_factor = float(st.session_state.get("curve_active_week_factor", 1.0))
+            month_factor = float(st.session_state.get("curve_active_month_factor", 1.0))
+            active_factor = float(st.session_state.get("curve_active_factor", 1.0))
+            stored_start_date = str(st.session_state.get("curve_start_date", ""))
+            stored_end_date = str(st.session_state.get("curve_end_date", ""))
+
+            st.caption("Showing last built curve. Click 'Build curve' to recalculate.")
+
+            figure = px.line(
+                stored_curve_df,
+                x=stored_x_column,
+                y="probability",
+                title=f"{title_prefix} ({curve_weekday} x {curve_month})",
+                labels={"probability": "Kans op aankomst auto"},
+            )
+            style_curve_figure(figure)
+
+            st.caption(
+                f"Applied factor = week({curve_weekday}: {week_factor:.2f}) x "
+                f"month({curve_month}: {month_factor:.2f}) = {active_factor:.2f}"
+            )
+            if stored_start_date and stored_end_date:
+                st.caption(f"Date range: {stored_start_date} → {stored_end_date}")
+
+            st.plotly_chart(figure, use_container_width=True)
+
+            st.subheader("Cumulative energy graph")
+            energy_figure = px.line(
+                stored_energy_flow_df,
+                x="timestamp",
+                y="battery_remaining_kwh",
+                title="Battery pack remaining energy over time",
+                labels={
+                    "timestamp": "Time",
+                    "battery_remaining_kwh": "Battery remaining (kWh)",
+                },
+            )
+            style_curve_figure(energy_figure)
+            st.plotly_chart(energy_figure, use_container_width=True)
+            return
+
         st.info("Set inputs in the sidebar and click 'Build curve'.")
         return
 
@@ -356,6 +415,17 @@ def _render_probability_curve(
         )
 
         title_prefix = "Probability per minute van de dag" if per_minute else "Kans curve"
+        st.session_state["curve_df"] = curve_df
+        st.session_state["curve_x_column"] = x_column
+        st.session_state["curve_title_prefix"] = title_prefix
+        st.session_state["curve_selected_weekday"] = selected_weekday
+        st.session_state["curve_selected_month"] = selected_month
+        st.session_state["curve_active_week_factor"] = active_week_factor
+        st.session_state["curve_active_month_factor"] = active_month_factor
+        st.session_state["curve_active_factor"] = active_factor
+        st.session_state["curve_start_date"] = start_date.isoformat()
+        st.session_state["curve_end_date"] = end_date.isoformat()
+
         figure = px.line(
             curve_df,
             x=x_column,
@@ -399,6 +469,12 @@ def _render_probability_curve(
             in_progress_threshold_min=in_progress_threshold_min,
             random_seed=42,
         )
+        loading_profile_df = apply_battery_constraints_to_loading_profile(
+            loading_profile_df,
+            battery_size_kwh=battery_size_kwh,
+            connection_capacity_kw=connection_capacity_kw,
+            session_draw_kwh_per_min=charge_speed_kwh_per_min,
+        )
         loading_profile_df = add_session_financials(
             loading_profile_df,
             market_price_kwh_ex_btw=market_price_kwh_ex_btw,
@@ -418,7 +494,7 @@ def _render_probability_curve(
             end_date=pd.Timestamp(end_date),
             battery_size_kwh=battery_size_kwh,
             connection_capacity_kw=connection_capacity_kw,
-            session_draw_kwh_per_min=1.16,
+            session_draw_kwh_per_min=charge_speed_kwh_per_min,
         )
         energy_flow_df["market_price_kwh_ex_btw"] = market_price_kwh_ex_btw
         energy_flow_df["retail_price_kwh_ex_btw"] = retail_price_kwh_ex_btw
@@ -508,14 +584,26 @@ def _filter_data(dataframe: pd.DataFrame, selected_team: str) -> pd.DataFrame:
     return dataframe.loc[team_mask].reset_index(drop=True)
 
 
-def _get_missed_sessions_total(loading_profile_df: object) -> int:
+def _get_missed_sessions_by_reason(loading_profile_df: object) -> tuple[int, int]:
     if not isinstance(loading_profile_df, pd.DataFrame) or loading_profile_df.empty:
-        return 0
+        return 0, 0
+
+    if "missed_reason" in loading_profile_df.columns:
+        reasons = loading_profile_df["missed_reason"].astype(str)
+        missed_pistol = int((reasons == "pistol_unavailable").sum())
+        missed_battery = int((reasons == "battery_empty").sum())
+        return missed_pistol, missed_battery
+
+    if "session_missed_by_battery" in loading_profile_df.columns and "session_missed" in loading_profile_df.columns:
+        missed_battery = int(loading_profile_df["session_missed_by_battery"].astype(bool).sum())
+        missed_total = int(loading_profile_df["session_missed"].astype(bool).sum())
+        missed_pistol = max(0, missed_total - missed_battery)
+        return missed_pistol, missed_battery
 
     if "session_missed" in loading_profile_df.columns:
-        return int(loading_profile_df["session_missed"].astype(int).sum())
+        return int(loading_profile_df["session_missed"].astype(bool).sum()), 0
 
-    return 0
+    return 0, 0
 
 
 def _get_total_sessions(loading_profile_df: object) -> int:
@@ -525,9 +613,15 @@ def _get_total_sessions(loading_profile_df: object) -> int:
     return int(len(loading_profile_df))
 
 
-def _render_kpis(kpis: dict[str, float], total_sessions: int, missed_sessions_total: int) -> None:
-    col1, col2, col3, col4 = st.columns(4)
+def _render_kpis(
+    kpis: dict[str, float],
+    total_sessions: int,
+    missed_sessions_pistol: int,
+    missed_sessions_battery: int,
+) -> None:
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Total turnover ex. btw", f"€ {kpis['total_turnover_ex_btw']:,.2f}")
     col2.metric("Total profit ex. btw", f"€ {kpis['total_profit_ex_btw']:,.2f}")
     col3.metric("Total Sessions", f"{total_sessions}")
-    col4.metric("Missed Sessions", f"{missed_sessions_total}")
+    col4.metric("Missed (pistol)", f"{missed_sessions_pistol}")
+    col5.metric("Missed (battery)", f"{missed_sessions_battery}")
