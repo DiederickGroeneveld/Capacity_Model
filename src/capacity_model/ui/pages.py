@@ -4,6 +4,7 @@ import base64
 from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -320,23 +321,26 @@ def _run_sensitivity_analysis(
         st.warning("Build curve first before running sensitivity analysis.")
         return
 
-    st.session_state["sensitivity_analysis_df"] = build_sensitivity_analysis_dataframe(
-        probability_table_df,
-        trials=trials,
-        number_of_charge_points_options=range(1, 5),
-        expected_sessions_options=range(0, 41),
-        average_duration_min=average_duration_min,
-        duration_spread_min=duration_spread_min,
-        charge_speed_kwh_per_min=charge_speed_kwh_per_min,
-        average_kwh=average_kwh,
-        recapture_rate=recapture_rate,
-        in_progress_threshold_min=in_progress_threshold_min,
-        battery_size_kwh=battery_size_kwh,
-        connection_capacity_kw=connection_capacity_kw,
-        market_price_kwh_ex_btw=market_price_kwh_ex_btw,
-        retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
-        random_seed=42,
-    )
+    with st.spinner(
+        "Many Calculations required, this could take 10 minutes or more depending on the selected time frame"
+    ):
+        st.session_state["sensitivity_analysis_df"] = build_sensitivity_analysis_dataframe(
+            probability_table_df,
+            trials=trials,
+            number_of_charge_points_options=range(1, 5),
+            expected_sessions_options=range(0, 41),
+            average_duration_min=average_duration_min,
+            duration_spread_min=duration_spread_min,
+            charge_speed_kwh_per_min=charge_speed_kwh_per_min,
+            average_kwh=average_kwh,
+            recapture_rate=recapture_rate,
+            in_progress_threshold_min=in_progress_threshold_min,
+            battery_size_kwh=battery_size_kwh,
+            connection_capacity_kw=connection_capacity_kw,
+            market_price_kwh_ex_btw=market_price_kwh_ex_btw,
+            retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
+            random_seed=42,
+        )
 
 
 def _render_company_logo() -> None:
@@ -700,39 +704,82 @@ def _render_sensitivity_analysis_section(sensitivity_analysis_df: object) -> Non
         "missed_sessions_spots": "Missed sessions (spots)",
         "missed_sessions_battery": "Missed sessions (battery)",
     }
-    selected_metric = st.selectbox(
-        "Heat map metric",
-        options=list(heatmap_metric_labels.keys()),
-        index=1,
-        format_func=lambda metric: heatmap_metric_labels[metric],
-        key="sensitivity_heatmap_metric",
+
+    pivot_by_metric = {
+        metric: display_df.pivot(
+            index="number_of_charge_points",
+            columns="expected_sessions_per_day",
+            values=metric,
+        )
+        for metric in heatmap_metric_labels
+    }
+    customdata = np.dstack(
+        [
+            pivot_by_metric["total_turnover_ex_btw"].to_numpy(),
+            pivot_by_metric["total_profit_ex_btw"].to_numpy(),
+            pivot_by_metric["total_charge_sessions"].to_numpy(),
+            pivot_by_metric["missed_sessions_spots"].to_numpy(),
+            pivot_by_metric["missed_sessions_battery"].to_numpy(),
+        ]
     )
 
-    heatmap_df = display_df.pivot(
-        index="number_of_charge_points",
-        columns="expected_sessions_per_day",
-        values=selected_metric,
+    def _plot_sensitivity_heatmap(metric: str) -> None:
+        z_format = ",.2f" if metric in {"total_turnover_ex_btw", "total_profit_ex_btw"} else ",.0f"
+        heatmap_df = pivot_by_metric[metric]
+        heatmap_figure = px.imshow(
+            heatmap_df,
+            labels={
+                "x": "Expected sessions per day",
+                "y": "Aantal laadpunten",
+                "color": heatmap_metric_labels[metric],
+            },
+            title=f"Sensitivity heat map: {heatmap_metric_labels[metric]}",
+            aspect="auto",
+            color_continuous_scale="Viridis",
+        )
+        heatmap_figure.update_traces(
+            customdata=customdata,
+            hovertemplate=(
+                "Expected sessions/day: %{x}<br>"
+                "Laadpunten: %{y}<br>"
+                "Total turnover ex. btw: € %{customdata[0]:,.2f}<br>"
+                "Total profit ex. btw: € %{customdata[1]:,.2f}<br>"
+                "Total charge sessions: %{customdata[2]:,.0f}<br>"
+                "Missed sessions (spots): %{customdata[3]:,.0f}<br>"
+                "Missed sessions (battery): %{customdata[4]:,.0f}<br>"
+                f"{heatmap_metric_labels[metric]}: %{{z:{z_format}}}"
+                "<extra></extra>"
+            ),
+        )
+        heatmap_figure.update_xaxes(type="category")
+        heatmap_figure.update_yaxes(type="category")
+        heatmap_figure.update_layout(
+            font_color="#1E2A1E",
+            title_font_color="#2F5A2C",
+            xaxis=dict(gridcolor="#E8EFE6"),
+            yaxis=dict(gridcolor="#E8EFE6"),
+        )
+        st.plotly_chart(heatmap_figure, use_container_width=True)
+
+    tab_current, tab_spots, tab_battery = st.tabs(
+        ["Current heat map", "Missed sessions (spots)", "Missed sessions (battery)"]
     )
-    heatmap_figure = px.imshow(
-        heatmap_df,
-        labels={
-            "x": "Expected sessions per day",
-            "y": "Aantal laadpunten",
-            "color": heatmap_metric_labels[selected_metric],
-        },
-        title=f"Sensitivity heat map: {heatmap_metric_labels[selected_metric]}",
-        aspect="auto",
-        color_continuous_scale="Viridis",
-    )
-    heatmap_figure.update_xaxes(type="category")
-    heatmap_figure.update_yaxes(type="category")
-    heatmap_figure.update_layout(
-        font_color="#1E2A1E",
-        title_font_color="#2F5A2C",
-        xaxis=dict(gridcolor="#E8EFE6"),
-        yaxis=dict(gridcolor="#E8EFE6"),
-    )
-    st.plotly_chart(heatmap_figure, use_container_width=True)
+
+    with tab_current:
+        selected_metric = st.selectbox(
+            "Heat map metric",
+            options=list(heatmap_metric_labels.keys()),
+            index=1,
+            format_func=lambda metric: heatmap_metric_labels[metric],
+            key="sensitivity_heatmap_metric",
+        )
+        _plot_sensitivity_heatmap(selected_metric)
+
+    with tab_spots:
+        _plot_sensitivity_heatmap("missed_sessions_spots")
+
+    with tab_battery:
+        _plot_sensitivity_heatmap("missed_sessions_battery")
 
     st.dataframe(display_df, use_container_width=True)
     st.download_button(
