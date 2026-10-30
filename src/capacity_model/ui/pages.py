@@ -22,6 +22,7 @@ from capacity_model.services.energy_flow import (
 from capacity_model.services.factors import resolve_active_factor
 from capacity_model.services.loading_profile import simulate_loading_profile_from_arrivals
 from capacity_model.services.session_finance import add_session_financials, build_financial_kpis
+from capacity_model.services.sensitivity import build_sensitivity_analysis_dataframe
 from capacity_model.ui.theme import apply_brand_theme, style_curve_figure
 
 
@@ -82,6 +83,7 @@ def render_home_page(settings: Settings) -> None:
         selected_weekday = st.selectbox("Gebruik weekfactor van", list(weekday_factors.keys()), index=0)
         selected_month = st.selectbox("Gebruik maandfactor van", list(month_factors.keys()), index=0)
         run = st.button("Build curve")
+        do_sensitivity_analysis = st.button("Do Sensitivity Analysis")
         st.divider()
         start_date = st.date_input("Start date", value=date.today())
         end_date = st.date_input("End date", value=date.today() + timedelta(days=30))
@@ -252,6 +254,21 @@ def render_home_page(settings: Settings) -> None:
         selected_month,
     )
 
+    if do_sensitivity_analysis:
+        _run_sensitivity_analysis(
+            trials=trials,
+            average_duration_min=average_duration_min,
+            duration_spread_min=duration_spread_min,
+            charge_speed_kwh_per_min=charge_speed_kwh_per_min,
+            average_kwh=average_kwh,
+            recapture_rate=recapture_rate,
+            in_progress_threshold_min=in_progress_threshold_min,
+            battery_size_kwh=battery_size_kwh,
+            connection_capacity_kw=connection_capacity_kw,
+            market_price_kwh_ex_btw=market_price_kwh_ex_btw,
+            retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
+        )
+
     total_sessions = _get_total_sessions(st.session_state.get("loading_profile_df"))
     missed_sessions_pistol, missed_sessions_battery = _get_missed_sessions_by_reason(
         st.session_state.get("loading_profile_df")
@@ -274,12 +291,52 @@ def render_home_page(settings: Settings) -> None:
             avg_profit_per_charge_session,
         )
 
+    _render_sensitivity_analysis_section(st.session_state.get("sensitivity_analysis_df"))
+
 
 def _parse_float_list(raw: str, label: str) -> list[float]:
     values = [value.strip() for value in raw.split(",") if value.strip()]
     if not values:
         raise ValueError(f"{label} cannot be empty.")
     return [float(value) for value in values]
+
+
+def _run_sensitivity_analysis(
+    *,
+    trials: int,
+    average_duration_min: float,
+    duration_spread_min: float,
+    charge_speed_kwh_per_min: float,
+    average_kwh: float,
+    recapture_rate: float,
+    in_progress_threshold_min: float,
+    battery_size_kwh: float,
+    connection_capacity_kw: float,
+    market_price_kwh_ex_btw: float,
+    retail_price_kwh_ex_btw: float,
+) -> None:
+    probability_table_df = st.session_state.get("probability_table_df")
+    if not isinstance(probability_table_df, pd.DataFrame) or probability_table_df.empty:
+        st.warning("Build curve first before running sensitivity analysis.")
+        return
+
+    st.session_state["sensitivity_analysis_df"] = build_sensitivity_analysis_dataframe(
+        probability_table_df,
+        trials=trials,
+        number_of_charge_points_options=range(1, 5),
+        expected_sessions_options=range(0, 41),
+        average_duration_min=average_duration_min,
+        duration_spread_min=duration_spread_min,
+        charge_speed_kwh_per_min=charge_speed_kwh_per_min,
+        average_kwh=average_kwh,
+        recapture_rate=recapture_rate,
+        in_progress_threshold_min=in_progress_threshold_min,
+        battery_size_kwh=battery_size_kwh,
+        connection_capacity_kw=connection_capacity_kw,
+        market_price_kwh_ex_btw=market_price_kwh_ex_btw,
+        retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
+        random_seed=42,
+    )
 
 
 def _render_company_logo() -> None:
@@ -621,6 +678,28 @@ def _get_total_sessions(loading_profile_df: object) -> int:
         return 0
 
     return int(len(loading_profile_df))
+
+
+def _render_sensitivity_analysis_section(sensitivity_analysis_df: object) -> None:
+    st.markdown("### Sensitivity analysis")
+    st.caption("KPI outcomes for 0-40 sessions/day and 1-4 laadpunten.")
+
+    if not isinstance(sensitivity_analysis_df, pd.DataFrame) or sensitivity_analysis_df.empty:
+        st.info("No sensitivity analysis yet. Build a curve first.")
+        return
+
+    display_df = sensitivity_analysis_df.sort_values(
+        by=["number_of_charge_points", "expected_sessions_per_day"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+
+    st.dataframe(display_df, use_container_width=True)
+    st.download_button(
+        "Download sensitivity analysis (CSV)",
+        data=display_df.to_csv(index=False).encode("utf-8"),
+        file_name="sensitivity_analysis_dataset.csv",
+        mime="text/csv",
+    )
 
 
 def _get_average_charge_kpis(loading_profile_df: object) -> tuple[float, float]:
