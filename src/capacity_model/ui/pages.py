@@ -256,13 +256,23 @@ def render_home_page(settings: Settings) -> None:
     missed_sessions_pistol, missed_sessions_battery = _get_missed_sessions_by_reason(
         st.session_state.get("loading_profile_df")
     )
+    avg_charge_duration_min, avg_profit_per_charge_session = _get_average_charge_kpis(
+        st.session_state.get("loading_profile_df")
+    )
     kpis = build_financial_kpis(
         st.session_state.get("loading_profile_df", pd.DataFrame()),
         market_price_kwh_ex_btw=market_price_kwh_ex_btw,
         retail_price_kwh_ex_btw=retail_price_kwh_ex_btw,
     )
     with kpi_container:
-        _render_kpis(kpis, total_sessions, missed_sessions_pistol, missed_sessions_battery)
+        _render_kpis(
+            kpis,
+            total_sessions,
+            missed_sessions_pistol,
+            missed_sessions_battery,
+            avg_charge_duration_min,
+            avg_profit_per_charge_session,
+        )
 
 
 def _parse_float_list(raw: str, label: str) -> list[float]:
@@ -613,15 +623,41 @@ def _get_total_sessions(loading_profile_df: object) -> int:
     return int(len(loading_profile_df))
 
 
+def _get_average_charge_kpis(loading_profile_df: object) -> tuple[float, float]:
+    if not isinstance(loading_profile_df, pd.DataFrame) or loading_profile_df.empty:
+        return 0.0, 0.0
+
+    charged_sessions_df = loading_profile_df.copy()
+    if "session_missed" in charged_sessions_df.columns:
+        charged_sessions_df = charged_sessions_df.loc[~charged_sessions_df["session_missed"].astype(bool)]
+
+    if charged_sessions_df.empty:
+        return 0.0, 0.0
+
+    avg_duration = 0.0
+    if "duration_min" in charged_sessions_df.columns:
+        avg_duration = float(charged_sessions_df["duration_min"].mean())
+
+    avg_profit = 0.0
+    if "session_profit_ex_btw" in charged_sessions_df.columns:
+        avg_profit = float(charged_sessions_df["session_profit_ex_btw"].mean())
+
+    return avg_duration, avg_profit
+
+
 def _render_kpis(
     kpis: dict[str, float],
     total_sessions: int,
     missed_sessions_pistol: int,
     missed_sessions_battery: int,
+    avg_charge_duration_min: float,
+    avg_profit_per_charge_session: float,
 ) -> None:
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     col1.metric("Total turnover ex. btw", f"€ {kpis['total_turnover_ex_btw']:,.2f}")
     col2.metric("Total profit ex. btw", f"€ {kpis['total_profit_ex_btw']:,.2f}")
-    col3.metric("Total Sessions", f"{total_sessions}")
-    col4.metric("Missed (pistol)", f"{missed_sessions_pistol}")
-    col5.metric("Missed (battery)", f"{missed_sessions_battery}")
+    col3.metric("Total Charge Sessions", f"{total_sessions}")
+    col4.metric("Missed (No Spots available)", f"{missed_sessions_pistol}")
+    col5.metric("Missed (Empty battery)", f"{missed_sessions_battery}")
+    col6.metric("Avg charge duration", f"{avg_charge_duration_min:.1f} min")
+    col7.metric("Avg profit / charge session", f"€ {avg_profit_per_charge_session:,.2f}")
