@@ -693,6 +693,47 @@ def _render_sensitivity_analysis_section(sensitivity_analysis_df: object) -> Non
         ascending=[True, True],
     ).reset_index(drop=True)
 
+    heatmap_metric_labels = {
+        "total_turnover_ex_btw": "Total turnover ex. btw",
+        "total_profit_ex_btw": "Total profit ex. btw",
+        "total_charge_sessions": "Total charge sessions",
+        "missed_sessions_spots": "Missed sessions (spots)",
+        "missed_sessions_battery": "Missed sessions (battery)",
+    }
+    selected_metric = st.selectbox(
+        "Heat map metric",
+        options=list(heatmap_metric_labels.keys()),
+        index=1,
+        format_func=lambda metric: heatmap_metric_labels[metric],
+        key="sensitivity_heatmap_metric",
+    )
+
+    heatmap_df = display_df.pivot(
+        index="number_of_charge_points",
+        columns="expected_sessions_per_day",
+        values=selected_metric,
+    )
+    heatmap_figure = px.imshow(
+        heatmap_df,
+        labels={
+            "x": "Expected sessions per day",
+            "y": "Aantal laadpunten",
+            "color": heatmap_metric_labels[selected_metric],
+        },
+        title=f"Sensitivity heat map: {heatmap_metric_labels[selected_metric]}",
+        aspect="auto",
+        color_continuous_scale="Viridis",
+    )
+    heatmap_figure.update_xaxes(type="category")
+    heatmap_figure.update_yaxes(type="category")
+    heatmap_figure.update_layout(
+        font_color="#1E2A1E",
+        title_font_color="#2F5A2C",
+        xaxis=dict(gridcolor="#E8EFE6"),
+        yaxis=dict(gridcolor="#E8EFE6"),
+    )
+    st.plotly_chart(heatmap_figure, use_container_width=True)
+
     st.dataframe(display_df, use_container_width=True)
     st.download_button(
         "Download sensitivity analysis (CSV)",
