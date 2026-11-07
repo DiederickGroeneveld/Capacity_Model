@@ -25,10 +25,14 @@ def apply_battery_constraints_to_loading_profile(
     battery_size_kwh: float,
     connection_capacity_kw: float,
     session_draw_kwh_per_min: float = 1.16,
+    battery_reserve_fraction: float = 0.05,
+    battery_charge_ceiling_fraction: float = 0.95,
 ) -> pd.DataFrame:
-    """Mark sessions as missed when battery becomes empty while they are charging.
+    """Mark sessions as missed when battery available-for-use is depleted.
 
-    Existing missed sessions (e.g. no available pistol) are preserved.
+    A reserve fraction of the battery is protected and cannot be used for
+    charging sessions. Existing missed sessions (e.g. no available pistol)
+    are preserved.
     """
     if battery_size_kwh <= 0:
         raise ValueError("battery_size_kwh must be > 0")
@@ -36,6 +40,12 @@ def apply_battery_constraints_to_loading_profile(
         raise ValueError("connection_capacity_kw must be > 0")
     if session_draw_kwh_per_min <= 0:
         raise ValueError("session_draw_kwh_per_min must be > 0")
+    if not 0 <= battery_reserve_fraction < 1:
+        raise ValueError("battery_reserve_fraction must be >= 0 and < 1")
+    if not 0 < battery_charge_ceiling_fraction <= 1:
+        raise ValueError("battery_charge_ceiling_fraction must be > 0 and <= 1")
+    if battery_charge_ceiling_fraction <= battery_reserve_fraction:
+        raise ValueError("battery_charge_ceiling_fraction must be > battery_reserve_fraction")
 
     result = loading_profile_df.copy()
     if result.empty:
@@ -95,6 +105,8 @@ def apply_battery_constraints_to_loading_profile(
     active_indices: set[int] = set()
     connection_cap_kwh_per_min = connection_capacity_kw / 60.0
     current_battery_kwh = float(battery_size_kwh)
+    reserve_kwh = float(battery_size_kwh) * float(battery_reserve_fraction)
+    charge_ceiling_kwh = float(battery_size_kwh) * float(battery_charge_ceiling_fraction)
 
     for idx in range(total_minutes):
         for session_index in ends_by_idx.get(idx, []):
@@ -105,13 +117,14 @@ def apply_battery_constraints_to_loading_profile(
         active_count = len(active_indices)
         if active_count > 0:
             requested_draw = min(active_count * session_draw_kwh_per_min, connection_cap_kwh_per_min)
-            actual_draw = min(requested_draw, current_battery_kwh)
+            available_for_draw = max(current_battery_kwh - reserve_kwh, 0.0)
+            actual_draw = min(requested_draw, available_for_draw)
             shortage = requested_draw - actual_draw
             if shortage > 1e-9:
                 battery_missed_indices.update(active_indices)
-            current_battery_kwh = max(current_battery_kwh - actual_draw, 0.0)
+            current_battery_kwh = max(current_battery_kwh - actual_draw, reserve_kwh)
         else:
-            current_battery_kwh = min(current_battery_kwh + connection_cap_kwh_per_min, battery_size_kwh)
+            current_battery_kwh = min(current_battery_kwh + connection_cap_kwh_per_min, charge_ceiling_kwh)
 
     if battery_missed_indices:
         missed_index = result.index.intersection(list(battery_missed_indices))
@@ -149,6 +162,8 @@ def build_cumulative_energy_flow_dataframe(
     battery_size_kwh: float,
     connection_capacity_kw: float,
     session_draw_kwh_per_min: float = 1.16,
+    battery_reserve_fraction: float = 0.10,
+    battery_charge_ceiling_fraction: float = 0.95,
 ) -> pd.DataFrame:
     """Build minute-level cumulative energy flow from charging sessions.
 
@@ -164,6 +179,12 @@ def build_cumulative_energy_flow_dataframe(
         raise ValueError("connection_capacity_kw must be > 0")
     if session_draw_kwh_per_min <= 0:
         raise ValueError("session_draw_kwh_per_min must be > 0")
+    if not 0 <= battery_reserve_fraction < 1:
+        raise ValueError("battery_reserve_fraction must be >= 0 and < 1")
+    if not 0 < battery_charge_ceiling_fraction <= 1:
+        raise ValueError("battery_charge_ceiling_fraction must be > 0 and <= 1")
+    if battery_charge_ceiling_fraction <= battery_reserve_fraction:
+        raise ValueError("battery_charge_ceiling_fraction must be > battery_reserve_fraction")
 
     start_ts = pd.Timestamp(start_date).normalize()
     end_ts = pd.Timestamp(end_date).normalize() + pd.Timedelta(hours=23, minutes=59)
@@ -206,19 +227,24 @@ def build_cumulative_energy_flow_dataframe(
     active_sessions = np.cumsum(active_delta[:-1])
     connection_cap_kwh_per_min = connection_capacity_kw / 60.0
     uncapped_draw_kwh_per_min = active_sessions * session_draw_kwh_per_min
-    draw_kwh_per_min = np.minimum(uncapped_draw_kwh_per_min, connection_cap_kwh_per_min)
-
-    cumulative_used_kwh = np.cumsum(draw_kwh_per_min)
+    requested_draw_kwh_per_min = np.minimum(uncapped_draw_kwh_per_min, connection_cap_kwh_per_min)
     charge_kwh_per_min = np.where(active_sessions == 0, connection_cap_kwh_per_min, 0.0)
 
     battery_remaining_kwh = np.empty(len(timeline), dtype=float)
+    draw_kwh_per_min = np.empty(len(timeline), dtype=float)
     current_battery_kwh = battery_size_kwh
+    reserve_kwh = float(battery_size_kwh) * float(battery_reserve_fraction)
+    charge_ceiling_kwh = float(battery_size_kwh) * float(battery_charge_ceiling_fraction)
     for idx in range(len(timeline)):
-        current_battery_kwh -= draw_kwh_per_min[idx]
-        current_battery_kwh = max(current_battery_kwh, 0.0)
+        available_for_draw = max(current_battery_kwh - reserve_kwh, 0.0)
+        actual_draw = min(requested_draw_kwh_per_min[idx], available_for_draw)
+        draw_kwh_per_min[idx] = actual_draw
+        current_battery_kwh = max(current_battery_kwh - actual_draw, reserve_kwh)
         current_battery_kwh += charge_kwh_per_min[idx]
-        current_battery_kwh = min(current_battery_kwh, battery_size_kwh)
+        current_battery_kwh = min(current_battery_kwh, charge_ceiling_kwh)
         battery_remaining_kwh[idx] = current_battery_kwh
+
+    cumulative_used_kwh = np.cumsum(draw_kwh_per_min)
 
     return pd.DataFrame(
         {
@@ -233,5 +259,9 @@ def build_cumulative_energy_flow_dataframe(
             "connection_capacity_kwh_per_min": connection_cap_kwh_per_min,
             "session_draw_kwh_per_min": session_draw_kwh_per_min,
             "battery_size_kwh": battery_size_kwh,
+            "battery_reserve_fraction": battery_reserve_fraction,
+            "battery_reserve_kwh": reserve_kwh,
+            "battery_charge_ceiling_fraction": battery_charge_ceiling_fraction,
+            "battery_charge_ceiling_kwh": charge_ceiling_kwh,
         }
     )

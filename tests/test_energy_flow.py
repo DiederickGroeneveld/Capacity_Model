@@ -106,7 +106,7 @@ def test_build_cumulative_energy_flow_dataframe_recharges_when_idle() -> None:
     assert float(result.iloc[0]["battery_remaining_kwh"]) == pytest.approx(2.0)
     assert float(result.iloc[1]["battery_remaining_kwh"]) == pytest.approx(1.0)
     assert float(result.iloc[2]["battery_remaining_kwh"]) == pytest.approx(2.0)
-    assert float(result.iloc[3]["battery_remaining_kwh"]) == pytest.approx(3.0)
+    assert float(result.iloc[3]["battery_remaining_kwh"]) == pytest.approx(2.85)
     assert float(result.iloc[2]["charge_kwh_per_min"]) == pytest.approx(1.0)
 
 
@@ -120,8 +120,33 @@ def test_build_cumulative_energy_flow_dataframe_recharge_is_capped_at_battery_si
         session_draw_kwh_per_min=1.16,
     )
 
-    assert float(result.iloc[0]["battery_remaining_kwh"]) == pytest.approx(5.0)
-    assert float(result.iloc[10]["battery_remaining_kwh"]) == pytest.approx(5.0)
+    assert float(result.iloc[0]["battery_remaining_kwh"]) == pytest.approx(4.75)
+    assert float(result.iloc[10]["battery_remaining_kwh"]) == pytest.approx(4.75)
+
+
+def test_build_cumulative_energy_flow_dataframe_keeps_10_percent_reserve() -> None:
+    loading_profile = pd.DataFrame(
+        [
+            {
+                "session_id": 1,
+                "charging_start_datetime": "2026-01-01 00:00",
+                "end_datetime": "2026-01-01 00:20",
+                "session_missed": False,
+            }
+        ]
+    )
+
+    result = build_cumulative_energy_flow_dataframe(
+        loading_profile,
+        start_date=pd.Timestamp("2026-01-01"),
+        end_date=pd.Timestamp("2026-01-01"),
+        battery_size_kwh=10.0,
+        connection_capacity_kw=60.0,
+        session_draw_kwh_per_min=1.0,
+    )
+
+    assert float(result["battery_remaining_kwh"].min()) == pytest.approx(1.0)
+    assert float(result.iloc[9]["draw_kwh_per_min"]) == pytest.approx(0.0)
 
 
 def test_apply_battery_constraints_marks_sessions_missed_when_battery_is_empty() -> None:
@@ -184,3 +209,28 @@ def test_apply_battery_constraints_preserves_existing_pistol_misses() -> None:
     assert bool(result.iloc[0]["session_missed"]) is True
     assert bool(result.iloc[0]["session_missed_by_battery"]) is False
     assert str(result.iloc[0]["missed_reason"]) == "pistol_unavailable"
+
+
+def test_apply_battery_constraints_allows_draw_until_reserve_boundary() -> None:
+    loading_profile = pd.DataFrame(
+        [
+            {
+                "session_id": 1,
+                "arrival_datetime": "2026-01-01 00:00",
+                "charging_start_datetime": "2026-01-01 00:00",
+                "end_datetime": "2026-01-01 00:01",
+                "session_missed": False,
+                "used_pistol": "pistol_1",
+            }
+        ]
+    )
+
+    result = apply_battery_constraints_to_loading_profile(
+        loading_profile,
+        battery_size_kwh=1.0,
+        connection_capacity_kw=60.0,
+        session_draw_kwh_per_min=0.9,
+    )
+
+    assert bool(result.iloc[0]["session_missed"]) is False
+    assert bool(result.iloc[0]["session_missed_by_battery"]) is False

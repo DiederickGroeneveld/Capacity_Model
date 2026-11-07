@@ -781,6 +781,50 @@ def _render_sensitivity_analysis_section(sensitivity_analysis_df: object) -> Non
     with tab_battery:
         _plot_sensitivity_heatmap("missed_sessions_battery")
 
+    st.markdown("#### Sensitivity trend lines")
+
+    trend_df = display_df.copy()
+    trend_df["charge_points_label"] = trend_df["number_of_charge_points"].astype(int).astype(str)
+
+    def _plot_sensitivity_line_chart(metric: str, title: str, y_label: str) -> None:
+        line_figure = px.line(
+            trend_df,
+            x="expected_sessions_per_day",
+            y=metric,
+            color="charge_points_label",
+            markers=True,
+            labels={
+                "expected_sessions_per_day": "Expected sessions per day",
+                metric: y_label,
+                "charge_points_label": "Aantal laadpunten",
+            },
+            title=title,
+        )
+        line_figure.update_layout(
+            font_color="#1E2A1E",
+            title_font_color="#2F5A2C",
+            xaxis=dict(gridcolor="#E8EFE6"),
+            yaxis=dict(gridcolor="#E8EFE6"),
+        )
+        line_figure.update_traces(line=dict(width=3))
+        st.plotly_chart(line_figure, use_container_width=True)
+
+    _plot_sensitivity_line_chart(
+        "total_profit_ex_btw",
+        "Profit by expected sessions (per aantal laadpunten)",
+        "Total profit ex. btw",
+    )
+    _plot_sensitivity_line_chart(
+        "missed_sessions_spots",
+        "Missed sessions (spots) by expected sessions (per aantal laadpunten)",
+        "Missed sessions (spots)",
+    )
+    _plot_sensitivity_line_chart(
+        "missed_sessions_battery",
+        "Missed sessions (battery) by expected sessions (per aantal laadpunten)",
+        "Missed sessions (battery)",
+    )
+
     st.dataframe(display_df, use_container_width=True)
     st.download_button(
         "Download sensitivity analysis (CSV)",
